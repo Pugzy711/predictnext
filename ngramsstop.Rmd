@@ -1,0 +1,193 @@
+---
+title: "Ngrams with Stopwords"
+author: "Lulu T"
+date: "07/07/2021"
+output: html_document
+---
+```{r setup, include=FALSE }
+knitr::opts_chunk$set(echo = TRUE, error = FALSE, warning = FALSE)
+library(ggplot2)
+library(NLP)
+library(tm)
+library(RWeka)
+library(data.table)
+library(dplyr)
+library(stringi)
+library(SnowballC)
+```
+
+```{r }
+datapath <- "final"
+blogfile <- "en_US.blogs.txt"
+newsfile <- "en_US.news.txt"
+twitterfile <- "en_US.twitter.txt"
+```
+
+### reading files function:
+
+```{r}
+# reading files function:
+
+readfile <- function(filename){
+    con <- file(file.path(datapath, "en_US", filename), "r")
+    text <- readLines(con, encoding="UTF-8", skipNul = TRUE)
+    close(con)
+    text
+}
+```
+
+#### Reading the Files:
+
+```{r , cache=TRUE}
+
+en_news0 <- readfile(newsfile)
+en_blogs0 <- readfile(blogfile)
+en_twitter0 <- readfile(twitterfile)
+
+```
+
+#### create test sample:
+```{r}
+set.seed(514)
+samplesize <- 50000
+blogsample <- sample(en_blogs0, samplesize, replace = FALSE)
+newssample <- sample(en_news0, samplesize, replace = FALSE)
+twittersample <- sample(en_twitter0, samplesize, replace = FALSE)
+test.data <- c(blogsample, newssample, twittersample)
+saveRDS(test.data, 'rawdata.rds')
+
+# some summary info:
+testlines <- length(test.data);
+testwords <- sum(stri_count_words(test.data))
+sprintf("No. lines: %s",testlines)
+sprintf("No. words: %s",testwords)
+# Cleaning up a other object we do not use anymore.
+rm(en_news0, en_blogs0, en_twitter0, blogsample, newssample, twittersample)
+```
+
+
+
+#### Preprocessing data:
+```{r}
+data("profanity_alvarez")
+
+# Load the RDS file
+rawtext <- readRDS("rawdata.rds")
+# Create a Corpus
+docs <- VCorpus(VectorSource(rawtext))
+
+remove.pattern <- content_transformer(function(x, pattern) gsub(pattern, " ", x))
+    
+# remove URL, Twitter handles and email patterns and foreign words:
+docs <- tm_map(docs, remove.pattern, "(f|ht)tp(s?)://(.*)[.][a-z]+")
+docs <- tm_map(docs, remove.pattern, "@[^\\s]+")
+docs <- tm_map(docs, remove.pattern, "\\b[A-Z a-z 0-9._ - ]*[@](.*?)[.]{1,3} \\b")
+
+# Remove data we do not need 
+docs <- tm_map(docs, tolower)
+docs <- tm_map(docs, removeNumbers)
+docs <- tm_map(docs, removeWords, "profanity_alvarez")
+docs <- tm_map(docs, removePunctuation)
+# Strip whitespaces
+docs <- tm_map(docs, stripWhitespace)
+# Create plain text format
+docs <- tm_map(docs, PlainTextDocument)
+```
+
+#### save corpus:
+```{r}
+saveRDS(docs, file = "corpus_stop.rds")
+```
+
+#### create tokenization functions:
+```{r}
+# Create Tokenization funtions
+unigram <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1))
+bigram <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+trigram <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+fourgram <- function(x) NGramTokenizer(x, Weka_control(min = 4, max = 4))
+```
+
+#### Exploratory Analysis:
+```{r}
+docs <- readRDS("corpus_stop.rds")
+# Create TermDocumentMatrix with Tokenizations and Remove Sparse Terms
+tdm.freq1 <- TermDocumentMatrix(docs, control = list(tokenize = unigram))
+tdm.freq2 <- TermDocumentMatrix(docs, control = list(tokenize = bigram))
+tdm.freq3 <- TermDocumentMatrix(docs, control = list(tokenize = trigram))
+tdm.freq4 <- TermDocumentMatrix(docs, control = list(tokenize = fourgram))
+```
+
+#### Find only the most frequent terms:
+```{r}
+frequni <- findFreqTerms(tdm.freq1, lowfreq = 5)
+freqbi <- findFreqTerms(tdm.freq2, lowfreq = 6)
+freqtri <- findFreqTerms(tdm.freq3, lowfreq = 4)
+freqquad <- findFreqTerms(tdm.freq4, lowfreq = 2)
+```
+
+```{r}
+# Create frequencies 
+uni.freq <- sort(rowSums(as.matrix(tdm.freq1[frequni,])), decreasing=TRUE)
+bi.freq <- sort(rowSums(as.matrix(tdm.freq2[freqbi,])), decreasing=TRUE)
+tri.freq <- sort(rowSums(as.matrix(tdm.freq3[freqtri,])), decreasing=TRUE)
+quad.freq <- sort(rowSums(as.matrix(tdm.freq4[freqquad,])), decreasing=TRUE)
+```
+
+```{r}
+# Create DataFrames
+uni.df <- data.frame(term=names(uni.freq), 
+                     freq=uni.freq, 
+                     row.names = NULL,
+                     check.rows = FALSE,
+                     check.names = FALSE,
+                     stringsAsFactors = FALSE)   
+bi.df <- data.frame(term=names(bi.freq), 
+                    freq=bi.freq, 
+                    row.names = NULL,
+                    check.rows = FALSE,
+                    check.names = FALSE,
+                    stringsAsFactors = FALSE)   
+tri.df <- data.frame(term=names(tri.freq), 
+                     freq=tri.freq, 
+                     row.names = NULL,
+                     check.rows = FALSE,
+                     check.names = FALSE,
+                     stringsAsFactors = FALSE)
+quad.df <- data.frame(term=names(quad.freq), 
+                      freq=quad.freq, 
+                      row.names = NULL,
+                      check.rows = FALSE,
+                      check.names = FALSE,
+                      stringsAsFactors = FALSE)
+```
+
+
+#### proportions and cumulative proportions:
+
+```{r, cache=TRUE}
+# calculate percent of word use across all sources and cumulative frequency of those words. 
+calprop  <- function(df){ 
+    prop.df <- df %>%
+        mutate(term, prop = round(freq / sum(freq), 5))%>%
+        arrange(desc(prop)) %>%
+        mutate(term, cfreq = round(cumsum(prop), 5))
+    prop.df
+}
+```
+
+```{r}
+uni.df <- calprop(uni.df)
+bi.df <- calprop(bi.df)
+tri.df <- calprop(tri.df)
+quad.df <- calprop(quad.df)
+```
+#### save to rds files:
+```{r}
+saveRDS(uni.df, file = "unigrams_stop.rds")
+saveRDS(bi.df, file = "bigrams_stop.rds")
+saveRDS(tri.df, file = "trigrams_stop.rds")
+saveRDS(quad.df, file = "quadgrams_stop.rds")
+```
+
+
